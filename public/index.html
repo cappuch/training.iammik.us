@@ -235,6 +235,75 @@
     transform-origin: left;
     transition: transform 1s linear;
   }
+
+  /* ── Run selector ── */
+  .run-selector {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 24px;
+  }
+
+  .run-selector label {
+    flex-shrink: 0;
+  }
+
+  .run-selector select {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text);
+    padding: 3px 6px;
+    cursor: pointer;
+    outline: none;
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 18px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23888'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 5px center;
+    min-width: 180px;
+  }
+
+  .run-selector select:focus {
+    border-color: var(--text);
+  }
+
+  .run-auto-badge {
+    color: var(--text-muted);
+    font-size: 10px;
+    opacity: 0.7;
+  }
+
+  .run-writeup {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 14px;
+    margin: -8px 0 20px;
+  }
+
+  .run-writeup-label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+  }
+
+  .run-writeup-text {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text);
+    max-width: 70ch;
+  }
 </style>
 </head>
 <body>
@@ -244,6 +313,19 @@
 </header>
 
 <hr class="divider">
+
+<div class="run-selector">
+  <label for="run-select">run:</label>
+  <select id="run-select" disabled>
+    <option value="">loading runs…</option>
+  </select>
+  <span class="run-auto-badge" id="run-auto-badge"></span>
+</div>
+
+<div class="run-writeup">
+  <span class="run-writeup-label">writeup</span>
+  <p class="run-writeup-text" id="run-writeup-text">Select a run to view notes.</p>
+</div>
 
 <div class="status-bar">
   <span id="run-state"><span class="dot"></span>loading...</span>
@@ -329,6 +411,13 @@
 <script>
 const TOKENS_PER_STEP = 512 * 4 * 4; // block_size × batch_size × grad_accum
 const CHARTS = {};
+const RUN_WRITEUPS = {
+  z4hkkvdh: "quick lm_head-only train run. loss plateaued and i knew it was gg, so i went for a lora-train instead",
+  "714dn4ng": "lora-train with lm_head being trained. the ppl is already drastically lower. i hope this doesn't result in a garbage model however.",
+};
+
+let selectedRun = null; // set after /api/runs loads
+let autoRun = null;     // the auto-detected running run name
 
 const CHART_DEFS = [
   { id: 'train-ppl',       metricKey: 'train_ppl',        valFmt: v => '~' + (v >= 1000 ? (v/1000).toFixed(1)+'k' : v.toFixed(1)), yLog: true  },
@@ -451,6 +540,11 @@ function setStatus(runInfo, stale) {
 
 }
 
+function updateWriteup(runName) {
+  const writeupEl = document.getElementById('run-writeup-text');
+  writeupEl.textContent = RUN_WRITEUPS[runName] ?? 'No notes for this run yet.';
+}
+
 const REFRESH_MS = 30_000;
 const note     = document.getElementById('refresh-note');
 const noteText = document.getElementById('refresh-text');
@@ -468,12 +562,56 @@ function startCountdown() {
   bar.style.transform = 'scaleX(0)';
 }
 
+async function loadRuns() {
+  const sel = document.getElementById('run-select');
+  const badge = document.getElementById('run-auto-badge');
+  try {
+    const res = await fetch('/api/runs');
+    const { runs } = await res.json();
+
+    sel.innerHTML = '';
+    for (const r of runs) {
+      const opt = document.createElement('option');
+      opt.value = r.name;
+      const alive = r.state === 'running';
+      opt.textContent = `${r.name}  ${alive ? '● running' : '○ ' + r.state}`;
+      sel.appendChild(opt);
+    }
+
+    autoRun = runs.find(r => r.state === 'running')?.name ?? runs[0]?.name;
+    if (autoRun) {
+      sel.value = autoRun;
+      selectedRun = autoRun;
+      badge.textContent = 'auto';
+      updateWriteup(autoRun);
+    }
+    sel.disabled = false;
+
+    sel.addEventListener('change', () => {
+      selectedRun = sel.value;
+      badge.textContent = selectedRun === autoRun ? 'auto' : 'manual';
+      updateWriteup(selectedRun);
+      // invalidate cache for this run by refreshing immediately
+      refresh();
+    });
+  } catch (e) {
+    sel.innerHTML = '<option value="">failed to load runs</option>';
+  }
+}
+
 async function refresh() {
   note.classList.add('fetching');
   noteText.textContent = 'updating…';
 
+  const run = selectedRun;
+  if (!run) {
+    note.classList.remove('fetching');
+    startCountdown();
+    return;
+  }
+
   try {
-    const res = await fetch('/api/metrics');
+    const res = await fetch('/api/metrics?run=' + encodeURIComponent(run));
     const { metrics, runInfo, stale } = await res.json();
 
     setStatus(runInfo, stale);
@@ -514,7 +652,7 @@ async function refresh() {
   }
 }
 
-refresh();
+loadRuns().then(() => refresh());
 setInterval(refresh, REFRESH_MS);
 </script>
 </body>

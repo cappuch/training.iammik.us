@@ -8,7 +8,6 @@ const PORT = process.env.PORT || 3000;
 
 const ENTITY = "mikusdevr";
 const PROJECT = "privacy-filter-causal";
-const RUN_NAME = "z4hkkvdh";
 
 const GRAPHQL_QUERY = `query RunsStateDeltaQuery_DD_DQ_U_RSDQ($aggregationKeys: [String!], $configKeys: [String!], $currentRuns: [String!]!, $enableAggregations: Boolean = false, $enableArtifactCounts: Boolean = false, $enableBasic: Boolean = true, $enableConfig: Boolean = false, $enableHistoryKeyInfo: Boolean = false, $enableSampledHistory: Boolean = false, $enableSummary: Boolean = false, $enableSystemMetrics: Boolean = true, $enableTags: Boolean = true, $enableWandb: Boolean = false, $entityName: String!, $filters: JSONString!, $groupKeys: [String!]!, $groupLevel: Int!, $lastUpdated: DateTime!, $limit: Int!, $order: String!, $projectName: String!, $sampledHistorySpecs: [JSONString!]!, $summaryKeys: [String!], $wandbKeys: [String!]) {
   project(name: $projectName, entityName: $entityName) {
@@ -87,55 +86,98 @@ const SPECS = [
   { key: "eval/ppl", label: "eval_ppl" },
 ];
 
-let cache = null;
-let cacheTime = 0;
-const CACHE_TTL = 30_000;
+const metricsCache = new Map(); // runName -> { data, time }
+const METRICS_TTL = 30_000;
 
-async function fetchMetrics() {
-  const sampledHistorySpecs = SPECS.map((s) =>
-    JSON.stringify({ keys: [s.key, "_step"], samples: 9007199254740991 }),
-  );
+let runsCache = null;
+let runsCacheTime = 0;
+const RUNS_TTL = 60_000;
 
-  const body = JSON.stringify({
-    operationName: "RunsStateDeltaQuery_DD_DQ_U_RSDQ",
-    variables: {
-      enableAggregations: false,
-      enableBasic: true,
-      enableConfig: true,
-      enableSampledHistory: true,
-      enableSummary: true,
-      enableSystemMetrics: true,
-      enableWandb: false,
-      configKeys: [],
-      entityName: ENTITY,
-      filters: JSON.stringify({ name: RUN_NAME }),
-      groupKeys: [],
-      groupLevel: 0,
-      limit: 1,
-      order: "-createdAt",
-      panelType: "Run History Line Plot",
-      projectName: PROJECT,
-      sampledHistorySpecs,
-      summaryKeys: [],
-      currentRuns: [],
-      lastUpdated: "1970-01-01T00:00:00.000Z",
-    },
-    query: GRAPHQL_QUERY,
-  });
-
+async function wandbPost(variables) {
   const res = await fetch("https://api.wandb.ai/graphql", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       origin: "https://wandb.ai",
       "x-origin": "https://wandb.ai",
-      //cookie: WANDB_COOKIE,
     },
-    body,
+    body: JSON.stringify({
+      operationName: "RunsStateDeltaQuery_DD_DQ_U_RSDQ",
+      variables,
+      query: GRAPHQL_QUERY,
+    }),
   });
-
   const json = await res.json();
   if (json.errors) throw new Error(json.errors[0]?.message || "GraphQL error");
+  return json;
+}
+
+async function fetchRuns() {
+  const now = Date.now();
+  if (runsCache && now - runsCacheTime < RUNS_TTL) return runsCache;
+
+  const json = await wandbPost({
+    enableAggregations: false,
+    enableBasic: true,
+    enableConfig: false,
+    enableSampledHistory: false,
+    enableSummary: false,
+    enableSystemMetrics: false,
+    enableWandb: false,
+    configKeys: [],
+    entityName: ENTITY,
+    filters: "{}",
+    groupKeys: [],
+    groupLevel: 0,
+    limit: 30,
+    order: "-updatedAt",
+    projectName: PROJECT,
+    sampledHistorySpecs: [],
+    summaryKeys: [],
+    currentRuns: [],
+    lastUpdated: "1970-01-01T00:00:00.000Z",
+  });
+
+  const delta = json.data?.project?.runs?.delta ?? [];
+  runsCache = delta
+    .map((d) => ({
+      name: d.run.name,
+      displayName: d.run.displayName,
+      state: d.run.state,
+      updatedAt: d.run.updatedAt,
+    }))
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  runsCacheTime = now;
+  return runsCache;
+}
+
+async function fetchMetrics(runName) {
+  const sampledHistorySpecs = SPECS.map((s) =>
+    JSON.stringify({ keys: [s.key, "_step"], samples: 9007199254740991 }),
+  );
+
+  const json = await wandbPost({
+    enableAggregations: false,
+    enableBasic: true,
+    enableConfig: true,
+    enableSampledHistory: true,
+    enableSummary: true,
+    enableSystemMetrics: true,
+    enableWandb: false,
+    configKeys: [],
+    entityName: ENTITY,
+    filters: JSON.stringify({ name: runName }),
+    groupKeys: [],
+    groupLevel: 0,
+    limit: 1,
+    order: "-createdAt",
+    panelType: "Run History Line Plot",
+    projectName: PROJECT,
+    sampledHistorySpecs,
+    summaryKeys: [],
+    currentRuns: [],
+    lastUpdated: "1970-01-01T00:00:00.000Z",
+  });
 
   const delta = json.data?.project?.runs?.delta ?? [];
   if (!delta.length)
@@ -155,6 +197,7 @@ async function fetchMetrics() {
   }
 
   const runInfo = {
+    name: run.name,
     displayName: run.displayName,
     state: run.state,
     updatedAt: run.updatedAt,
@@ -166,16 +209,43 @@ async function fetchMetrics() {
   return { metrics, runInfo, fetchedAt: Date.now() };
 }
 
-app.get("/api/metrics", async (req, res) => {
-  const now = Date.now();
-  if (cache && now - cacheTime < CACHE_TTL) return res.json(cache);
+app.get("/api/runs", async (req, res) => {
   try {
-    cache = await fetchMetrics();
-    cacheTime = now;
-    res.json(cache);
+    runsCache = null; // always fresh on explicit request
+    const runs = await fetchRuns();
+    res.json({ runs });
+  } catch (e) {
+    console.error("Runs fetch error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/metrics", async (req, res) => {
+  let runName = req.query.run;
+
+  if (!runName) {
+    try {
+      const runs = await fetchRuns();
+      const alive = runs.find((r) => r.state === "running");
+      runName = alive?.name ?? runs[0]?.name;
+    } catch (e) {
+      return res.status(500).json({ error: "Could not resolve run: " + e.message });
+    }
+  }
+
+  if (!runName) return res.status(400).json({ error: "No runs found" });
+
+  const now = Date.now();
+  const cached = metricsCache.get(runName);
+  if (cached && now - cached.time < METRICS_TTL) return res.json(cached.data);
+
+  try {
+    const data = await fetchMetrics(runName);
+    metricsCache.set(runName, { data, time: now });
+    res.json(data);
   } catch (e) {
     console.error("Fetch error:", e.message);
-    if (cache) return res.json({ ...cache, stale: true });
+    if (cached) return res.json({ ...cached.data, stale: true });
     res.status(500).json({ error: e.message });
   }
 });
