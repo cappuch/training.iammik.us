@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>causal openai / privacy-filter</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #f7f7f5;
+    --card-bg: #ffffff;
+    --border: #c8c8c4;
+    --text: #111111;
+    --text-muted: #666660;
+    --grid: #e2e2de;
+    --line: #111111;
+    --font-mono: 'Courier New', Courier, monospace;
+    --font-sans: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    min-height: 100vh;
+    padding: 40px 36px 60px;
+  }
+
+  @media (max-width: 700px) {
+    body { padding: 24px 16px 48px; }
+  }
+
+  /* ── Header ── */
+  header {
+    margin-bottom: 32px;
+  }
+
+  .title {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+
+  .subtitle {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 6px;
+    font-family: var(--font-sans);
+  }
+
+  .project-desc {
+    margin-top: 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.6;
+  }
+
+  @media (max-width: 700px) {
+    .title { font-size: 20px; }
+    .subtitle { font-size: 11px; }
+    .project-desc { font-size: 10px; }
+  }
+
+  .project-desc span { color: var(--text); }
+
+  .divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 28px 0 32px;
+  }
+
+  /* ── Status bar ── */
+  .status-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px 24px;
+    margin-bottom: 28px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .status-bar .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    display: inline-block;
+    margin-right: 5px;
+    vertical-align: middle;
+  }
+
+  .status-bar .dot.running {
+    background: var(--text);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* ── Grid ── */
+  .charts-top {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  .charts-bottom {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+  }
+
+  @media (max-width: 900px) {
+    .charts-top { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  @media (max-width: 600px) {
+    .charts-top,
+    .charts-bottom { grid-template-columns: 1fr; }
+  }
+
+  /* ── Chart card ── */
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 18px 18px 14px;
+  }
+
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 14px;
+  }
+
+  .card-title {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text);
+  }
+
+  .card-value {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.02em;
+  }
+
+  .card-value.loading {
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  .chart-wrap {
+    position: relative;
+    height: 140px;
+  }
+
+  .card-footer {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+
+  /* ── Error / loading states ── */
+  .loading-overlay {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 140px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    border-top: 1px solid var(--grid);
+  }
+
+  .refresh-note {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 7px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-top: 20px;
+  }
+
+  .refresh-spinner {
+    display: none;
+    width: 9px;
+    height: 9px;
+    border: 1px solid var(--border);
+    border-top-color: var(--text);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
+  }
+
+  .refresh-note.fetching .refresh-spinner { display: block; }
+  .refresh-note.fetching #refresh-text { opacity: 0.5; }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .countdown-bar-wrap {
+    flex: 0 0 40px;
+    height: 2px;
+    background: var(--grid);
+    border-radius: 1px;
+    overflow: hidden;
+  }
+
+  .countdown-bar {
+    height: 100%;
+    background: var(--text-muted);
+    width: 100%;
+    transform-origin: left;
+    transition: transform 1s linear;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title">causal openai / privacy-filter</div>
+</header>
+
+<hr class="divider">
+
+<div class="status-bar">
+  <span id="run-state"><span class="dot"></span>loading...</span>
+  <span id="run-host"></span>
+  <span id="run-gpu"></span>
+  <span id="tokens-seen"></span>
+</div>
+
+<!-- Top row: train metrics -->
+<div class="charts-top">
+  <div class="card" id="card-train-ppl">
+    <div class="card-header">
+      <span class="card-title">train/ppl</span>
+      <span class="card-value loading" id="val-train-ppl">—</span>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-train-ppl"></canvas></div>
+    <div class="card-footer">
+      <span id="foot-train-ppl-steps"></span>
+      <span>steps →</span>
+    </div>
+  </div>
+
+  <div class="card" id="card-train-loss">
+    <div class="card-header">
+      <span class="card-title">train/loss</span>
+      <span class="card-value loading" id="val-train-loss">—</span>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-train-loss"></canvas></div>
+    <div class="card-footer">
+      <span id="foot-train-loss-steps"></span>
+      <span>steps →</span>
+    </div>
+  </div>
+
+  <div class="card" id="card-tok-per-sec">
+    <div class="card-header">
+      <span class="card-title">train/tok_per_sec</span>
+      <span class="card-value loading" id="val-train-tok-per-sec">—</span>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-train-tok-per-sec"></canvas></div>
+    <div class="card-footer">
+      <span id="foot-train-tok-per-sec-steps"></span>
+      <span>steps →</span>
+    </div>
+  </div>
+</div>
+
+<!-- Bottom row: eval metrics -->
+<div class="charts-bottom">
+  <div class="card" id="card-eval-loss">
+    <div class="card-header">
+      <span class="card-title">eval/loss</span>
+      <span class="card-value loading" id="val-eval-loss">—</span>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-eval-loss"></canvas></div>
+    <div class="card-footer">
+      <span id="foot-eval-loss-steps"></span>
+      <span>steps →</span>
+    </div>
+  </div>
+
+  <div class="card" id="card-eval-ppl">
+    <div class="card-header">
+      <span class="card-title">eval/ppl</span>
+      <span class="card-value loading" id="val-eval-ppl">—</span>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-eval-ppl"></canvas></div>
+    <div class="card-footer">
+      <span id="foot-eval-ppl-steps"></span>
+      <span>steps →</span>
+    </div>
+  </div>
+</div>
+
+<div class="refresh-note" id="refresh-note">
+  <span class="refresh-spinner"></span>
+  <span id="refresh-text">auto-refresh every 30s</span>
+  <div class="countdown-bar-wrap">
+    <div class="countdown-bar" id="countdown-bar"></div>
+  </div>
+</div>
+
+<script>
+const TOKENS_PER_STEP = 512 * 4 * 4; // block_size × batch_size × grad_accum
+const CHARTS = {};
+
+const CHART_DEFS = [
+  { id: 'train-ppl',       metricKey: 'train_ppl',        valFmt: v => '~' + (v >= 1000 ? (v/1000).toFixed(1)+'k' : v.toFixed(1)), yLog: true  },
+  { id: 'train-loss',      metricKey: 'train_loss',       valFmt: v => v.toFixed(4),                                        yLog: false },
+  { id: 'train-tok-per-sec', metricKey: 'train_tok_per_sec', valFmt: v => Math.round(v).toLocaleString() + ' t/s',         yLog: false },
+  { id: 'eval-loss',       metricKey: 'eval_loss',        valFmt: v => v.toFixed(4),                                        yLog: false },
+  { id: 'eval-ppl',        metricKey: 'eval_ppl',         valFmt: v => '~' + (v >= 1000 ? (v/1000).toFixed(1)+'k' : v.toFixed(1)), yLog: true  },
+];
+
+function fmtNum(n, decimals = 4) {
+  if (n == null) return '—';
+  return n.toFixed(decimals);
+}
+
+function buildChart(id, points, yLog) {
+  const canvas = document.getElementById('chart-' + id);
+  const ctx = canvas.getContext('2d');
+
+  if (CHARTS[id]) {
+    CHARTS[id].destroy();
+  }
+
+  const labels = points.map(p => p.step);
+  const values = points.map(p => p.value);
+
+  const gridColor = 'rgba(0,0,0,0.07)';
+  const axisColor = 'rgba(0,0,0,0.25)';
+
+  CHARTS[id] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        borderColor: '#111',
+        backgroundColor: 'transparent',
+        borderWidth: 1.2,
+        pointRadius: 0,
+        pointHoverRadius: 3,
+        tension: 0,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#fff',
+          borderColor: '#ccc',
+          borderWidth: 1,
+          titleColor: '#111',
+          bodyColor: '#111',
+          titleFont: { family: "'Courier New', monospace", size: 10 },
+          bodyFont:  { family: "'Courier New', monospace", size: 10 },
+          padding: 6,
+          callbacks: {
+            title: items => `step ${items[0].label}`,
+            label: item => ` ${item.raw != null ? item.raw.toPrecision(5) : '—'}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: 'linear',
+          grid: {
+            color: gridColor,
+            lineWidth: 1,
+            borderDash: [3, 4],
+          },
+          border: { color: axisColor },
+          ticks: {
+            font: { family: "'Courier New', monospace", size: 9 },
+            color: '#888',
+            maxTicksLimit: 6,
+            callback: v => v >= 1000 ? (v/1000).toFixed(0)+'k' : v,
+          },
+        },
+        y: {
+          type: yLog ? 'logarithmic' : 'linear',
+          grid: {
+            color: gridColor,
+            lineWidth: 1,
+            borderDash: [3, 4],
+          },
+          border: { color: axisColor },
+          ticks: {
+            font: { family: "'Courier New', monospace", size: 9 },
+            color: '#888',
+            maxTicksLimit: 5,
+            callback: v => {
+              if (Math.abs(v) >= 1000) return (v/1000).toFixed(0) + 'k';
+              if (Math.abs(v) >= 10) return v.toFixed(1);
+              return v.toPrecision(3);
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+function setStatus(runInfo, stale) {
+  if (!runInfo) return;
+
+  const stateEl = document.getElementById('run-state');
+  const isRunning = runInfo.state === 'running';
+  stateEl.innerHTML = `<span class="dot ${isRunning ? 'running' : ''}"></span>${runInfo.state ?? '—'}`;
+
+  const hostEl = document.getElementById('run-host');
+  if (runInfo.host) hostEl.textContent = `host: ${runInfo.host.split('.')[0]}`;
+
+  const gpuEl = document.getElementById('run-gpu');
+  if (runInfo.gpu) {
+    const gpuName = runInfo.gpu.replace('NVIDIA ', '').replace('Tesla ', '');
+    gpuEl.textContent = `gpu: ${runInfo.gpuCount ?? 1}× ${gpuName}`;
+  }
+
+}
+
+const REFRESH_MS = 30_000;
+const note     = document.getElementById('refresh-note');
+const noteText = document.getElementById('refresh-text');
+const bar      = document.getElementById('countdown-bar');
+let countdownStart = null;
+let rafId = null;
+
+function startCountdown() {
+  countdownStart = Date.now();
+  bar.style.transition = 'none';
+  bar.style.transform = 'scaleX(1)';
+  // Force reflow so the transition reset takes effect
+  bar.getBoundingClientRect();
+  bar.style.transition = `transform ${REFRESH_MS / 1000}s linear`;
+  bar.style.transform = 'scaleX(0)';
+}
+
+async function refresh() {
+  note.classList.add('fetching');
+  noteText.textContent = 'updating…';
+
+  try {
+    const res = await fetch('/api/metrics');
+    const { metrics, runInfo, stale } = await res.json();
+
+    setStatus(runInfo, stale);
+
+    let lastStep = null;
+    for (const def of CHART_DEFS) {
+      const points = metrics[def.metricKey] ?? [];
+      if (!points.length) continue;
+
+      buildChart(def.id, points, def.yLog);
+
+      const last = points[points.length - 1];
+      if (lastStep === null || last.step > lastStep) lastStep = last.step;
+
+      const valEl = document.getElementById('val-' + def.id);
+      valEl.textContent = def.valFmt(last.value);
+      valEl.classList.remove('loading');
+
+      const footEl = document.getElementById('foot-' + def.id + '-steps');
+      if (footEl) footEl.textContent = `n=${points.length}`;
+    }
+
+    if (lastStep !== null) {
+      const total = lastStep * TOKENS_PER_STEP;
+      const fmt = total >= 1e9 ? (total / 1e9).toFixed(2) + 'B'
+                : total >= 1e6 ? (total / 1e6).toFixed(1) + 'M'
+                : (total / 1e3).toFixed(0) + 'k';
+      document.getElementById('tokens-seen').textContent = `${fmt} tokens`;
+    }
+
+    const now = new Date().toLocaleTimeString();
+    noteText.textContent = `fetched ${now}${stale ? ' (stale)' : ''} · next in 30s`;
+  } catch (e) {
+    noteText.textContent = `error: ${e.message} · retrying in 30s`;
+  } finally {
+    note.classList.remove('fetching');
+    startCountdown();
+  }
+}
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
